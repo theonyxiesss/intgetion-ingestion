@@ -1,0 +1,41 @@
+{
+  "name": "@intgetion/ingestion",
+  "version": "0.1.0",
+  "description": "Job import for INTGETION JOB LIST: live and fixture sources, normalizing, scam and duplicate checks, imported jobs and their sources, the run ledger and the external apply link.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": "./src/modules/ingestion/service/index.ts",
+    "./ports": "./src/ports.ts",
+    "./server": "./src/server/app.ts",
+    "./db": "./src/db/owned.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server/main.ts",
+    "start": "tsx src/server/main.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@intgetion/kit": "github:theonyxiesss/intgetion-kit#v0.3.1",
+    "drizzle-orm": "^0.45.3",
+    "pino": "10.4.0",
+    "postgres": "^3.4.9",
+    "tsx": "^4.20.0",
+    "zod": "^4.6.5",
+    "@intgetion/jobs": "github:theonyxiesss/intgetion-jobs#v0.1.2",
+    "@intgetion/taxonomy": "github:theonyxiesss/intgetion-taxonomy#v0.3.0",
+    "@intgetion/companies": "github:theonyxiesss/intgetion-companies#v0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.11.0",
+    "pg": "^8.13.0",
+    "typescript": "^5",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
