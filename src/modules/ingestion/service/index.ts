@@ -9,6 +9,8 @@ export {
   runFixtureImports,
   runLiveImports,
 } from "./ingest-fixtures";
+export { runFullSourceChecks } from "./full-source-check";
+export type { FullSourceCheckReport } from "./full-source-check";
 export type { ImportReport } from "./ingest-fixtures";
 export { STALE_RUN_AFTER_MS } from "./ingest-fixtures";
 export * from "./run-ledger";

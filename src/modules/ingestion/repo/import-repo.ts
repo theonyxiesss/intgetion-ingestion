@@ -22,6 +22,7 @@ import {
   jobs,
 } from "../../../db/owned";
 import type { ImportAdapter } from "../adapters/types";
+import type { CheckResult } from "../service/liveness-rules";
 import type { DuplicateCandidate } from "../service/dedup";
 
 /** Queries only; the rules live in service/ (3.2). */
@@ -351,4 +352,58 @@ export async function queueRejectedImport(jobId: string, reason: string) {
 export async function pruneImportRunHistory(now: Date) {
   const before = new Date(now.getTime() - 180 * 86400000);
   await getDb().delete(importRuns).where(lt(importRuns.startedAt, before));
+}
+
+/** A source by name, without registering it; null when it never ran. */
+export async function findSourceByName(name: string) {
+  const [row] = await getDb()
+    .select({ id: importSources.id })
+    .from(importSources)
+    .where(eq(importSources.name, name))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The freshest liveness check across the rows of one source. */
+export async function latestSourceCheck(sourceId: string): Promise<Date | null> {
+  const [row] = await getDb()
+    .select({ at: sql<Date | null>`max(${jobSources.lastCheckedAt})` })
+    .from(jobSources)
+    .where(eq(jobSources.importSourceId, sourceId));
+  return row?.at ? new Date(row.at) : null;
+}
+
+/** External id and job id of every published imported job of one source. */
+export async function publishedSourceRows(sourceId: string) {
+  return getDb()
+    .select({ externalId: jobSources.externalId, jobId: jobSources.jobId })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        eq(jobSources.importSourceId, sourceId),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    );
+}
+
+/** Stores the result of a liveness check on source rows; touches nothing else. */
+export async function markChecked(
+  sourceId: string,
+  externalIds: readonly string[],
+  result: CheckResult,
+  note: string | null,
+  at: Date,
+) {
+  if (!externalIds.length) return;
+  await getDb()
+    .update(jobSources)
+    .set({ lastCheckedAt: at, lastCheckResult: result, lastCheckNote: note })
+    .where(
+      and(
+        eq(jobSources.importSourceId, sourceId),
+        inArray(jobSources.externalId, [...externalIds]),
+      ),
+    );
 }
