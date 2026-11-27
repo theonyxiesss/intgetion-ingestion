@@ -6,6 +6,7 @@ import type { RawImportedJob } from "../adapters/types";
 const repo = vi.hoisted(() => ({
   findSourceByName: vi.fn(),
   finishedRunsSince: vi.fn(),
+  sourceStartedSince: vi.fn(),
   latestSourceCheck: vi.fn(),
   publishedSourceRows: vi.fn(),
   sourceRowsOfJobs: vi.fn(),
@@ -65,6 +66,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   repo.findSourceByName.mockResolvedValue({ id: "src-1" });
   repo.finishedRunsSince.mockResolvedValue(0);
+  repo.sourceStartedSince.mockResolvedValue(false);
   repo.latestSourceCheck.mockResolvedValue(null);
   repo.publishedSourceRows.mockResolvedValue([
     { externalId: "a", jobId: "job-a" },
@@ -76,6 +78,7 @@ beforeEach(() => {
       jobId,
       sourceId: "src-1",
       lastSeenAt: new Date(now.getTime() - days(1)),
+      lastCheckResult: null,
     })),
   );
   jobsService.expireImportedJobs.mockImplementation(
@@ -105,7 +108,13 @@ describe("runFullSourceChecks", () => {
       expect.any(String),
       now,
     );
-    expect(report).toEqual({ checked: 1, closed: 1, skipped: 0, failed: 0 });
+    expect(report).toEqual({
+      checked: 1,
+      closed: 1,
+      closedJobIds: ["job-c"],
+      skipped: 0,
+      failed: 0,
+    });
   });
 
   it("closes nothing when the list is empty", async () => {
@@ -113,7 +122,13 @@ describe("runFullSourceChecks", () => {
     const report = await runFullSourceChecks({ now, sources: [source] });
     expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
     expect(repo.markChecked).not.toHaveBeenCalled();
-    expect(report).toEqual({ checked: 0, closed: 0, skipped: 0, failed: 1 });
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 0,
+      failed: 1,
+    });
   });
 
   it("closes nothing when the fetch throws", async () => {
@@ -126,7 +141,13 @@ describe("runFullSourceChecks", () => {
     const report = await runFullSourceChecks({ now, sources: [source] });
     expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
     expect(repo.markChecked).not.toHaveBeenCalled();
-    expect(report).toEqual({ checked: 0, closed: 0, skipped: 0, failed: 1 });
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 0,
+      failed: 1,
+    });
   });
 
   it("ignores window sources", async () => {
@@ -136,7 +157,13 @@ describe("runFullSourceChecks", () => {
       sources: [board("Remotive", fetchImpl, "window")],
     });
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(report).toEqual({ checked: 0, closed: 0, skipped: 0, failed: 0 });
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 0,
+      failed: 0,
+    });
   });
 
   it("skips a source checked two hours ago", async () => {
@@ -147,7 +174,13 @@ describe("runFullSourceChecks", () => {
       sources: [board("North", fetchImpl)],
     });
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(report).toEqual({ checked: 0, closed: 0, skipped: 1, failed: 0 });
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 1,
+      failed: 0,
+    });
   });
 
   it("skips a source imported successfully within the window", async () => {
@@ -191,8 +224,8 @@ describe("runFullSourceChecks", () => {
 
   it("keeps a job alive that another source still lists", async () => {
     repo.sourceRowsOfJobs.mockResolvedValue([
-      { jobId: "job-c", sourceId: "src-1", lastSeenAt: new Date(now.getTime() - days(1)) },
-      { jobId: "job-c", sourceId: "src-2", lastSeenAt: new Date(now.getTime() - hours(1)) },
+      { jobId: "job-c", sourceId: "src-1", lastSeenAt: new Date(now.getTime() - days(1)), lastCheckResult: null },
+      { jobId: "job-c", sourceId: "src-2", lastSeenAt: new Date(now.getTime() - hours(1)), lastCheckResult: null },
     ]);
     const source = board("North", vi.fn(async () => [record("a"), record("b")]));
     const report = await runFullSourceChecks({ now, sources: [source] });
@@ -229,6 +262,68 @@ describe("runFullSourceChecks", () => {
     const report = await runFullSourceChecks({ now, sources: [source] });
     expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
     expect(repo.markChecked).not.toHaveBeenCalled();
-    expect(report).toEqual({ checked: 0, closed: 0, skipped: 0, failed: 1 });
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 0,
+      failed: 1,
+    });
+  });
+
+  it("skips a source whose import run started within the window", async () => {
+    repo.sourceStartedSince.mockResolvedValue(true);
+    const fetchImpl = vi.fn(async () => [record("a")]);
+    const report = await runFullSourceChecks({
+      now,
+      sources: [board("North", fetchImpl)],
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(repo.sourceStartedSince).toHaveBeenCalledWith(
+      "src-1",
+      new Date(now.getTime() - hours(20)),
+    );
+    expect(report.skipped).toBe(1);
+  });
+
+  it("writes no mark and counts a failure when closing throws", async () => {
+    jobsService.expireImportedJobs.mockRejectedValue(new Error("db down"));
+    const source = board("North", vi.fn(async () => [record("a"), record("b")]));
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(repo.markChecked).not.toHaveBeenCalled();
+    expect(report).toEqual({
+      checked: 0,
+      closed: 0,
+      closedJobIds: [],
+      skipped: 0,
+      failed: 1,
+    });
+  });
+
+  it("writes the live mark only after the jobs were closed", async () => {
+    const order: string[] = [];
+    jobsService.expireImportedJobs.mockImplementation(async (ids: string[]) => {
+      order.push("expire");
+      return ids.length;
+    });
+    repo.markChecked.mockImplementation(async (_s: string, _ids: string[], result: string) => {
+      order.push(result);
+    });
+    const source = board("North", vi.fn(async () => [record("a"), record("b")]));
+    await runFullSourceChecks({ now, sources: [source] });
+    expect(order[0]).toBe("expire");
+    expect(order).toContain("live");
+    expect(order).toContain("closed");
+  });
+
+  it("keeps a job alive whose other source was last checked live", async () => {
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "job-c", sourceId: "src-1", lastSeenAt: new Date(now.getTime() - days(1)), lastCheckResult: null },
+      { jobId: "job-c", sourceId: "src-2", lastSeenAt: new Date(now.getTime() - days(60)), lastCheckResult: "live" },
+    ]);
+    const source = board("North", vi.fn(async () => [record("a"), record("b")]));
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(report.closedJobIds).toEqual([]);
   });
 });

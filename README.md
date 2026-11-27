@@ -24,31 +24,60 @@ branch and PR. The admin import page stays in the platform.
 
 ## Link liveness of imported jobs
 
-Two background processes keep published imported jobs honest. Neither saves
-or updates jobs. The result of the last check sits on `job_sources`
-(`last_checked_at`, `last_check_result`, `last_check_note`; migration
-`0002_source_checks.sql`). Closing goes through `expireImportedJobs(ids,
-"closed_at_source")` of the jobs module.
+Two background processes keep published imported jobs honest. They never
+create jobs or change job content; the only change to a job is its status,
+when a closed job is expired through `expireImportedJobs(ids,
+"closed_at_source")` of the jobs module. The result of the last check sits
+on `job_sources` (`last_checked_at`, `last_check_result`, `last_check_note`;
+migration `0002_source_checks.sql`). A source row that is relinked by an
+import starts with an empty check again.
 
 - `runFullSourceChecks` for "full" sources (company boards): downloads the
   list and closes published jobs that are missing from it. Schedule: once a
-  day.
+  day. Rules:
+  - a source is skipped when it was checked, or imported successfully,
+    within the last 20 hours, or when an import run of it started in that
+    window (it may still be running);
+  - a failed or empty list closes nothing and counts as `failed`;
+  - a non-empty list that shares no external id with our published rows
+    closes nothing and counts as `failed` (a broken feed, not news);
+  - a merged job that another source still carries is not closed: its row is
+    marked `unknown` / `listed_elsewhere`;
+  - check marks are written only after `expireImportedJobs` succeeded; if it
+    throws, nothing is written for that source and it counts as `failed`.
 - `runLivenessSweep` for "window" sources (Remotive, Himalayas, Jobicy,
   Remote OK), where absence from the feed means nothing: requests the link of
   each published imported job (`GET`, redirects followed, body not read) and
-  closes the job only on HTTP 404 or 410 reached on the same host (a redirect to another host is `unknown`). Schedule: every 15 minutes, 150 jobs
-  per run (14,400 checks a day), the longest unchecked first. A run stops
-  starting probes after 200 s; what it checked is kept and the rest go first
-  next time.
+  closes the job only on HTTP 404 or 410 reached on the same host (a redirect
+  to another host is `unknown`). A 404 of a merged job that another source
+  still carries closes nothing and is marked `unknown` / `listed_elsewhere`.
+  Schedule: every 15 minutes, 150 jobs per run (14,400 checks a day), the
+  longest unchecked first. A run stops starting probes after 200 s; what it
+  checked is kept and the rest go first next time. The sweep's requests use a
+  10 s timeout, at most 2 requests at once to one host, and the header
+  `User-Agent: IntgetionLinkCheck/1.0 (+https://intgetion.com)` (the full
+  check downloads lists through the source adapters, with their own settings).
 
-Closing rules: only a 404 or 410 on the job link itself (same host after redirects), or a job missing from a
-successfully downloaded, non-empty list of a "full" source. Everything else
-(403, 429, 5xx, timeout, network error, a redirect to another host, an empty
-or failed list) is `unknown` and the job stays published. Jobs closed by
-moderation are never touched (only `status = 'published'` is checked). At
-most 2 requests at once to one host, 10 s timeout, header
-`User-Agent: IntgetionLinkCheck/1.0 (+https://intgetion.com)`. The platform
-sets the schedules when the module is connected.
+"Another source still carries it" (D71, both processes): another source row
+of the same job was seen within that source's own stale window, or its last
+check was `live`.
+
+Reports:
+
+- `FullSourceCheckReport`: `checked`, `skipped`, `failed`, `closed` (count)
+  and `closedJobIds` (the ids passed to `expireImportedJobs`).
+- `LivenessSweepReport`: `probed`, `live`, `unknown`, `partial`, `closed`
+  (count), `closedJobIds`, `dueCount` (published rows of window sources after
+  the run) and `oldestDueCheckedAt` (the oldest check among them; `null` when
+  there are none or some row was never checked).
+
+Closing rules: only a 404 or 410 on the job link itself (same host after
+redirects), or a job missing from a successfully downloaded, non-empty list
+of a "full" source. Everything else (403, 429, 5xx, timeout, network error, a
+redirect to another host, an empty or failed list) is `unknown` and the job
+stays published. Jobs closed by moderation are never touched (only
+`status = 'published'` is checked). The platform sets the schedules when the
+module is connected.
 
 ## Ports (`src/ports.ts`)
 

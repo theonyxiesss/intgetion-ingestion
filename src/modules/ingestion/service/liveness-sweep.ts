@@ -1,5 +1,6 @@
 import { expireImportedJobs } from "../../../platform";
 import * as repo from "../repo/import-repo";
+import { splitGoneEverywhere } from "./gone-everywhere";
 import { LIVE_SOURCES } from "./ingest-fixtures";
 import {
   classifyProbe,
@@ -14,9 +15,17 @@ import {
 export type LivenessSweepReport = {
   probed: number;
   live: number;
+  /** Jobs closed, the length of `closedJobIds`. */
   closed: number;
+  /** Job ids passed to expireImportedJobs. */
+  closedJobIds: string[];
+  /** Probes that closed nothing, including 404s of jobs another source lists. */
   unknown: number;
   partial: boolean;
+  /** Published window rows after the run (the rows dueWindowChecks picks from). */
+  dueCount: number;
+  /** Oldest check among them; null when none or some were never checked. */
+  oldestDueCheckedAt: Date | null;
 };
 
 /** Parallel probes in total; the per-host cap is what protects the sites. */
@@ -64,8 +73,10 @@ async function probe(
  * Every 15 minutes: probes the link of published imported jobs of "window"
  * sources (the oldest check first) and closes a job only on HTTP 404 or 410.
  * Each result is stored as soon as it is known, so a run cut short by its
- * time budget keeps what it checked and the rest go first next time. Closed
- * jobs are expired in one call at the end; their mark is written after that.
+ * time budget keeps what it checked and the rest go first next time. A 404
+ * of a merged job that another source still lists closes nothing (D71) and
+ * is marked unknown / listed_elsewhere. Closed jobs are expired in one call
+ * at the end; their mark is written after that.
  */
 export async function runLivenessSweep(
   input: {
@@ -84,15 +95,20 @@ export async function runLivenessSweep(
     probed: 0,
     live: 0,
     closed: 0,
+    closedJobIds: [],
     unknown: 0,
     partial: false,
+    dueCount: 0,
+    oldestDueCheckedAt: null,
   };
 
   const sourceIds: string[] = [];
+  const staleAfter = new Map<string, number>();
   for (const source of LIVE_SOURCES) {
-    if (source.feed !== "window") continue;
     const row = await repo.findSourceByName(source.sourceName);
-    if (row) sourceIds.push(row.id);
+    if (!row) continue;
+    staleAfter.set(row.id, source.staleAfterMs);
+    if (source.feed === "window") sourceIds.push(row.id);
   }
   if (!sourceIds.length) return report;
 
@@ -135,11 +151,12 @@ export async function runLivenessSweep(
         release(host);
       }
       report.probed += 1;
-      report[outcome.result] += 1;
       if (outcome.result === "closed") {
+        // Counted once the D71 guard below has decided.
         closed.push({ job, note: outcome.note });
         continue;
       }
+      report[outcome.result] += 1;
       await repo.markChecked(
         job.sourceId,
         [job.externalId],
@@ -152,12 +169,46 @@ export async function runLivenessSweep(
 
   await Promise.all(Array.from({ length: WORKERS }, () => worker()));
 
-  if (closed.length) {
-    await expireImportedJobs(
-      closed.map(({ job }) => job.jobId),
-      "closed_at_source",
+  // D71: a 404 closes the job only when no other source still carries it.
+  const bySource = new Map<string, { job: Due; note: string }[]>();
+  for (const item of closed) {
+    bySource.set(item.job.sourceId, [
+      ...(bySource.get(item.job.sourceId) ?? []),
+      item,
+    ]);
+  }
+  const toClose: { job: Due; note: string }[] = [];
+  for (const [sourceId, items] of bySource) {
+    const fallback = staleAfter.get(sourceId) ?? 0;
+    const split = await splitGoneEverywhere(
+      items.map(({ job }) => job.jobId),
+      sourceId,
+      now,
+      (other) =>
+        new Date(now.getTime() - (staleAfter.get(other) ?? fallback)),
     );
-    for (const { job, note } of closed) {
+    for (const item of items) {
+      if (split.gone.has(item.job.jobId)) {
+        toClose.push(item);
+        continue;
+      }
+      report.unknown += 1;
+      await repo.markChecked(
+        sourceId,
+        [item.job.externalId],
+        "unknown",
+        "listed_elsewhere",
+        now,
+      );
+    }
+  }
+
+  if (toClose.length) {
+    const jobIds = [...new Set(toClose.map(({ job }) => job.jobId))];
+    await expireImportedJobs(jobIds, "closed_at_source");
+    report.closed = jobIds.length;
+    report.closedJobIds = jobIds;
+    for (const { job, note } of toClose) {
       await repo.markChecked(
         job.sourceId,
         [job.externalId],
@@ -167,5 +218,9 @@ export async function runLivenessSweep(
       );
     }
   }
+
+  const stats = await repo.dueWindowStats(sourceIds);
+  report.dueCount = stats.count;
+  report.oldestDueCheckedAt = stats.oldestCheckedAt;
   return report;
 }

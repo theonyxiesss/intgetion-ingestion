@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const repo = vi.hoisted(() => ({
   findSourceByName: vi.fn(),
   dueWindowChecks: vi.fn(),
+  dueWindowStats: vi.fn(),
+  sourceRowsOfJobs: vi.fn(),
   markChecked: vi.fn(),
 }));
 const jobsService = vi.hoisted(() => ({
@@ -42,6 +44,19 @@ beforeEach(() => {
     id: `id-${name}`,
   }));
   repo.markChecked.mockResolvedValue(undefined);
+  repo.dueWindowStats.mockResolvedValue({ count: 0, oldestCheckedAt: null });
+  // By default every job has only the one row of the source probing it.
+  repo.sourceRowsOfJobs.mockImplementation(async (ids: string[]) =>
+    ids.map((jobId) => ({
+      jobId,
+      sourceId: "src-1",
+      lastSeenAt: new Date(now.getTime() - 60_000),
+      lastCheckResult: null,
+    })),
+  );
+  jobsService.expireImportedJobs.mockImplementation(
+    async (ids: string[]) => ids.length,
+  );
 });
 
 describe("runLivenessSweep", () => {
@@ -61,8 +76,11 @@ describe("runLivenessSweep", () => {
       probed: 3,
       live: 1,
       closed: 1,
+      closedJobIds: ["job-1"],
       unknown: 1,
       partial: false,
+      dueCount: 0,
+      oldestDueCheckedAt: null,
     });
     expect(jobsService.expireImportedJobs).toHaveBeenCalledTimes(1);
     expect(jobsService.expireImportedJobs).toHaveBeenCalledWith(
@@ -184,5 +202,53 @@ describe("runLivenessSweep", () => {
     expect(limit).toBe(150);
     expect(repo.markChecked).toHaveBeenCalledWith("src-1", ["ext-1"], "live", "http_200", now);
     expect(repo.markChecked).toHaveBeenCalledWith("src-2", ["ext-2"], "live", "http_200", now);
+  });
+
+  it("keeps a merged job published when another source still lists it", async () => {
+    repo.dueWindowChecks.mockResolvedValue([due(1, "remotive.invalid", "id-Remotive")]);
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "job-1", sourceId: "id-Remotive", lastSeenAt: new Date(now.getTime() - 86_400_000), lastCheckResult: null },
+      { jobId: "job-1", sourceId: "src-2", lastSeenAt: new Date(now.getTime() - 3_600_000), lastCheckResult: null },
+    ]);
+    const fetchImpl = vi.fn(async (input: unknown) => res(404, String(input)));
+    const report = await runLivenessSweep({
+      now,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.sourceRowsOfJobs).toHaveBeenCalledWith(["job-1"]);
+    expect(repo.markChecked).toHaveBeenCalledWith(
+      "id-Remotive",
+      ["ext-1"],
+      "unknown",
+      "listed_elsewhere",
+      now,
+    );
+    expect(repo.markChecked).not.toHaveBeenCalledWith(
+      "id-Remotive",
+      ["ext-1"],
+      "closed",
+      expect.anything(),
+      now,
+    );
+    expect(report.closed).toBe(0);
+    expect(report.unknown).toBe(1);
+    expect(report.closedJobIds).toEqual([]);
+  });
+
+  it("reports how many jobs are due and the oldest check", async () => {
+    const oldest = new Date(now.getTime() - 20 * 3_600_000);
+    repo.dueWindowChecks.mockResolvedValue([]);
+    repo.dueWindowStats.mockResolvedValue({ count: 42, oldestCheckedAt: oldest });
+    const report = await runLivenessSweep({ now });
+    expect(report.dueCount).toBe(42);
+    expect(report.oldestDueCheckedAt).toEqual(oldest);
+    const [ids] = repo.dueWindowStats.mock.calls[0]!;
+    expect([...ids].sort()).toEqual([
+      "id-Himalayas",
+      "id-Jobicy",
+      "id-Remote OK",
+      "id-Remotive",
+    ]);
   });
 });

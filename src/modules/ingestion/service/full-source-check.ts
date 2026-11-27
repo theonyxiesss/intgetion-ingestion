@@ -1,7 +1,7 @@
 import { expireImportedJobs } from "../../../platform";
 import { hours, type LiveSource } from "../adapters/live";
 import * as repo from "../repo/import-repo";
-import { isGoneFromFullFeed } from "./outcome";
+import { splitGoneEverywhere } from "./gone-everywhere";
 import { LIVE_SOURCES } from "./ingest-fixtures";
 
 /** A full source is checked again when nothing touched it this long. */
@@ -9,7 +9,10 @@ export const FULL_CHECK_MAX_AGE_MS = hours(20);
 
 export type FullSourceCheckReport = {
   checked: number;
+  /** Jobs closed, the length of `closedJobIds`. */
   closed: number;
+  /** Job ids passed to expireImportedJobs. */
+  closedJobIds: string[];
   skipped: number;
   failed: number;
 };
@@ -17,7 +20,8 @@ export type FullSourceCheckReport = {
 /**
  * Daily check of "full" company boards: a published job missing from a
  * successfully downloaded, non-empty list is closed at the source. A failed
- * or empty list closes nothing. Jobs are not saved or updated, and neither
+ * or empty list closes nothing. It does not save or update job content; it
+ * only changes the status of closed jobs through expireImportedJobs. Neither
  * import_runs nor import_sources are written, so the import queue is intact.
  */
 export async function runFullSourceChecks(
@@ -34,6 +38,7 @@ export async function runFullSourceChecks(
   const report: FullSourceCheckReport = {
     checked: 0,
     closed: 0,
+    closedJobIds: [],
     skipped: 0,
     failed: 0,
   };
@@ -46,7 +51,13 @@ export async function runFullSourceChecks(
     }
     const lastCheck = await repo.latestSourceCheck(row.id);
     const importedRecently = (await repo.finishedRunsSince(row.id, since)) > 0;
-    if (importedRecently || (lastCheck !== null && lastCheck > since)) {
+    // A run that started in the window may still be importing this board.
+    const runStarted = await repo.sourceStartedSince(row.id, since);
+    if (
+      importedRecently ||
+      runStarted ||
+      (lastCheck !== null && lastCheck > since)
+    ) {
       report.skipped += 1;
       continue;
     }
@@ -73,28 +84,23 @@ export async function runFullSourceChecks(
     }
     const missing = published.filter((job) => !listedIds.has(job.externalId));
     // A merged job (D71) stays open while another source still lists it.
-    const gone: typeof missing = [];
-    const keptAlive: typeof missing = [];
-    if (missing.length) {
-      const cutoff = new Date(now.getTime() - source.staleAfterMs);
-      const rows = await repo.sourceRowsOfJobs([
-        ...new Set(missing.map((job) => job.jobId)),
-      ]);
-      const byJob = new Map<
-        string,
-        { lastSeenAt: Date; currentSource: boolean }[]
-      >();
-      for (const r of rows) {
-        byJob.set(r.jobId, [
-          ...(byJob.get(r.jobId) ?? []),
-          { lastSeenAt: r.lastSeenAt, currentSource: r.sourceId === row.id },
-        ]);
-      }
-      for (const job of missing) {
-        (isGoneFromFullFeed(byJob.get(job.jobId) ?? [], now, cutoff)
-          ? gone
-          : keptAlive
-        ).push(job);
+    const cutoff = new Date(now.getTime() - source.staleAfterMs);
+    const split = await splitGoneEverywhere(
+      missing.map((job) => job.jobId),
+      row.id,
+      now,
+      () => cutoff,
+    );
+    const gone = missing.filter((job) => split.gone.has(job.jobId));
+    const keptAlive = missing.filter((job) => !split.gone.has(job.jobId));
+    const goneJobIds = [...split.gone];
+    // Marks are written only once the jobs are really closed.
+    if (goneJobIds.length) {
+      try {
+        await expireImportedJobs(goneJobIds, "closed_at_source");
+      } catch {
+        report.failed += 1;
+        continue;
       }
     }
     await repo.markChecked(row.id, alive, "live", null, now);
@@ -105,21 +111,16 @@ export async function runFullSourceChecks(
       "listed_elsewhere",
       now,
     );
-    if (gone.length) {
-      await repo.markChecked(
-        row.id,
-        gone.map((job) => job.externalId),
-        "closed",
-        "missing from the full board list",
-        now,
-      );
-      await expireImportedJobs(
-        gone.map((job) => job.jobId),
-        "closed_at_source",
-      );
-    }
+    await repo.markChecked(
+      row.id,
+      gone.map((job) => job.externalId),
+      "closed",
+      "missing from the full board list",
+      now,
+    );
     report.checked += 1;
-    report.closed += gone.length;
+    report.closed += goneJobIds.length;
+    report.closedJobIds.push(...goneJobIds);
   }
   return report;
 }

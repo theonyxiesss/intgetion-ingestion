@@ -270,7 +270,15 @@ export async function linkImportedSource(
     })
     .onConflictDoUpdate({
       target: [jobSources.importSourceId, jobSources.externalId],
-      set: { jobId, sourceUrl, lastSeenAt: seenAt },
+      // A relinked row starts a fresh liveness history.
+      set: {
+        jobId,
+        sourceUrl,
+        lastSeenAt: seenAt,
+        lastCheckedAt: null,
+        lastCheckResult: null,
+        lastCheckNote: null,
+      },
     });
 }
 
@@ -336,6 +344,7 @@ export async function sourceRowsOfJobs(jobIds: string[]) {
       jobId: jobSources.jobId,
       sourceId: jobSources.importSourceId,
       lastSeenAt: jobSources.lastSeenAt,
+      lastCheckResult: jobSources.lastCheckResult,
     })
     .from(jobSources)
     .where(inArray(jobSources.jobId, jobIds));
@@ -415,6 +424,36 @@ export async function dueWindowChecks(
     )
     .orderBy(sql`${jobSources.lastCheckedAt} nulls first`, jobSources.firstSeenAt)
     .limit(limit);
+}
+
+/**
+ * Coverage of the window sweep over the same rows as `dueWindowChecks`: how
+ * many are due, and the oldest check among them. `oldestCheckedAt` is null
+ * when nothing is due or when some row was never checked at all.
+ */
+export async function dueWindowStats(
+  sourceIds: readonly string[],
+): Promise<{ count: number; oldestCheckedAt: Date | null }> {
+  if (!sourceIds.length) return { count: 0, oldestCheckedAt: null };
+  const [row] = await getDb()
+    .select({
+      count: sql<number>`count(*)::int`,
+      neverChecked: sql<boolean>`coalesce(bool_or(${jobSources.lastCheckedAt} is null), false)`,
+      oldest: sql<Date | null>`min(${jobSources.lastCheckedAt})`,
+    })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        inArray(jobSources.importSourceId, [...sourceIds]),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    );
+  const count = Number(row?.count ?? 0);
+  const oldestCheckedAt =
+    count === 0 || row?.neverChecked || !row?.oldest ? null : new Date(row.oldest);
+  return { count, oldestCheckedAt };
 }
 
 /** Stores the result of a liveness check on source rows; touches nothing else. */
