@@ -32,16 +32,17 @@ export function classifyProbe(input: {
 }): { result: CheckResult; note: string } {
   if (input.error !== null) return { result: "unknown", note: input.error };
   if (input.status === null) return { result: "unknown", note: "no_response" };
+  // No final URL means no redirect information, so the requested host.
+  const requested = hostOf(input.requestedUrl);
+  const final = input.finalUrl === null ? requested : hostOf(input.finalUrl);
+  if (requested === null || requested !== final) {
+    return { result: "unknown", note: "redirect_other_host" };
+  }
   if (input.status === 404 || input.status === 410) {
     return { result: "closed", note: `http_${input.status}` };
   }
   if (input.status >= 200 && input.status <= 299) {
-    const requested = hostOf(input.requestedUrl);
-    const final = hostOf(input.finalUrl);
-    if (requested !== null && requested === final) {
-      return { result: "live", note: `http_${input.status}` };
-    }
-    return { result: "unknown", note: "redirect_other_host" };
+    return { result: "live", note: `http_${input.status}` };
   }
   return { result: "unknown", note: `http_${input.status}` };
 }

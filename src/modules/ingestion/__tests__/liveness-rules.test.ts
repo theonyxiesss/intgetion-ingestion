@@ -52,6 +52,15 @@ describe("classifyProbe", () => {
     expect(probe(null).result).toBe("unknown");
   });
 
+  it("treats 404 and 410 after a cross-host redirect as unknown", () => {
+    for (const status of [404, 410]) {
+      expect(probe(status, { finalUrl: "https://parked.invalid/gone" })).toEqual({
+        result: "unknown",
+        note: "redirect_other_host",
+      });
+    }
+  });
+
   it("exposes the agreed constants", () => {
     expect(PROBE_TIMEOUT_MS).toBe(10_000);
     expect(PER_HOST_CONCURRENCY).toBe(2);

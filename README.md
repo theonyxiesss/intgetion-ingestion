@@ -36,12 +36,12 @@ or updates jobs. The result of the last check sits on `job_sources`
 - `runLivenessSweep` for "window" sources (Remotive, Himalayas, Jobicy,
   Remote OK), where absence from the feed means nothing: requests the link of
   each published imported job (`GET`, redirects followed, body not read) and
-  closes the job only on HTTP 404 or 410. Schedule: every 15 minutes, 150 jobs
+  closes the job only on HTTP 404 or 410 reached on the same host (a redirect to another host is `unknown`). Schedule: every 15 minutes, 150 jobs
   per run (14,400 checks a day), the longest unchecked first. A run stops
   starting probes after 200 s; what it checked is kept and the rest go first
   next time.
 
-Closing rules: only a 404 or 410 on the job link, or a job missing from a
+Closing rules: only a 404 or 410 on the job link itself (same host after redirects), or a job missing from a
 successfully downloaded, non-empty list of a "full" source. Everything else
 (403, 429, 5xx, timeout, network error, a redirect to another host, an empty
 or failed list) is `unknown` and the job stays published. Jobs closed by
