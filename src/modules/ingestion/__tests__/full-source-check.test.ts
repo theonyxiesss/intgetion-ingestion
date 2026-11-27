@@ -326,4 +326,27 @@ describe("runFullSourceChecks", () => {
     expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
     expect(report.closedJobIds).toEqual([]);
   });
+
+  it("keeps a job alive through another listed row of the same source", async () => {
+    repo.publishedSourceRows.mockResolvedValue([
+      { externalId: "a", jobId: "job-a" },
+      { externalId: "b", jobId: "job-b" },
+      { externalId: "a-old", jobId: "job-a" },
+    ]);
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "job-a", sourceId: "src-1", externalId: "a", lastSeenAt: new Date(now.getTime() - days(1)), lastCheckResult: null },
+      { jobId: "job-a", sourceId: "src-1", externalId: "a-old", lastSeenAt: new Date(now.getTime() - days(1)), lastCheckResult: null },
+    ]);
+    const source = board("North", vi.fn(async () => [record("a"), record("b")]));
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.markChecked).toHaveBeenCalledWith(
+      "src-1",
+      ["a-old"],
+      "unknown",
+      "listed_elsewhere",
+      now,
+    );
+    expect(report.closedJobIds).toEqual([]);
+  });
 });

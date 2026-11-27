@@ -90,6 +90,10 @@ export async function runFullSourceChecks(
       row.id,
       now,
       () => cutoff,
+      {
+        listedExternalIds: listedIds,
+        closingExternalIds: new Set(missing.map((job) => job.externalId)),
+      },
     );
     const gone = missing.filter((job) => split.gone.has(job.jobId));
     const keptAlive = missing.filter((job) => !split.gone.has(job.jobId));

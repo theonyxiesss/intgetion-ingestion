@@ -186,6 +186,8 @@ export async function runLivenessSweep(
       now,
       (other) =>
         new Date(now.getTime() - (staleAfter.get(other) ?? fallback)),
+      // Rows probed live in this run are already marked live above.
+      { closingExternalIds: new Set(items.map(({ job }) => job.externalId)) },
     );
     for (const item of items) {
       if (split.gone.has(item.job.jobId)) {

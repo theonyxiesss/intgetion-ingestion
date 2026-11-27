@@ -21,15 +21,20 @@ async function insertSource(externalId: string, result: string) {
   `);
 }
 
+// Guards every suite in this file: nothing is seeded unless the database is
+// on loopback. A module-level throw fails the file before any beforeAll runs.
+{
+  const dbUrl = process.env.DATABASE_URL;
+  if (
+    !dbUrl ||
+    !["localhost", "127.0.0.1", "::1", "[::1]"].includes(new URL(dbUrl).hostname)
+  ) {
+    throw new Error("source check integration tests require a loopback database");
+  }
+}
+
 describe("job source liveness check columns", () => {
   beforeAll(async () => {
-    const dbUrl = process.env.DATABASE_URL;
-    if (
-      !dbUrl ||
-      !["localhost", "127.0.0.1", "::1", "[::1]"].includes(new URL(dbUrl).hostname)
-    ) {
-      throw new Error("source check integration tests require a loopback database");
-    }
     useDbPorts();
     const db = getDb();
     await db.execute(

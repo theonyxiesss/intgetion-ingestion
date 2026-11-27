@@ -58,9 +58,11 @@ import starts with an empty check again.
   `User-Agent: IntgetionLinkCheck/1.0 (+https://intgetion.com)` (the full
   check downloads lists through the source adapters, with their own settings).
 
-"Another source still carries it" (D71, both processes): another source row
-of the same job was seen within that source's own stale window, or its last
-check was `live`.
+"Still carried elsewhere" (D71, both processes): another source row of the
+same job was seen within that source's own stale window, or its last check
+was `live`; or another row of the same source (one job under two external
+ids) was listed in this run or was last checked `live`, and is not itself
+being closed.
 
 Reports:
 

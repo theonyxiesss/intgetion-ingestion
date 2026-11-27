@@ -251,4 +251,40 @@ describe("runLivenessSweep", () => {
       "id-Remotive",
     ]);
   });
+
+  it("keeps a job published through another live row of the same source", async () => {
+    repo.dueWindowChecks.mockResolvedValue([due(1, "remotive.invalid", "id-Remotive")]);
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      // The 404 row itself was live before; that must not keep the job.
+      { jobId: "job-1", sourceId: "id-Remotive", externalId: "ext-1", lastSeenAt: new Date(now.getTime() - 86_400_000), lastCheckResult: "live" },
+      { jobId: "job-1", sourceId: "id-Remotive", externalId: "ext-9", lastSeenAt: new Date(now.getTime() - 86_400_000), lastCheckResult: "live" },
+    ]);
+    const fetchImpl = vi.fn(async (input: unknown) => res(404, String(input)));
+    const report = await runLivenessSweep({
+      now,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.markChecked).toHaveBeenCalledWith(
+      "id-Remotive",
+      ["ext-1"],
+      "unknown",
+      "listed_elsewhere",
+      now,
+    );
+    expect(report.closedJobIds).toEqual([]);
+  });
+
+  it("closes a job whose only row 404s even if it was live before", async () => {
+    repo.dueWindowChecks.mockResolvedValue([due(1, "remotive.invalid", "id-Remotive")]);
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "job-1", sourceId: "id-Remotive", externalId: "ext-1", lastSeenAt: new Date(now.getTime() - 86_400_000), lastCheckResult: "live" },
+    ]);
+    const fetchImpl = vi.fn(async (input: unknown) => res(404, String(input)));
+    const report = await runLivenessSweep({
+      now,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(report.closedJobIds).toEqual(["job-1"]);
+  });
 });

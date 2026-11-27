@@ -56,4 +56,26 @@ describe("splitGoneEverywhere", () => {
     expect(repo.sourceRowsOfJobs).not.toHaveBeenCalled();
     expect(split.gone.size + split.keptAlive.size).toBe(0);
   });
+
+  it("keeps a job through another row of the same source listed in this run", async () => {
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "j1", sourceId: "src-1", externalId: "x", lastSeenAt: ago(days(2)), lastCheckResult: null },
+      { jobId: "j1", sourceId: "src-1", externalId: "y", lastSeenAt: ago(days(2)), lastCheckResult: null },
+    ]);
+    const split = await splitGoneEverywhere(["j1"], "src-1", now, cutoffFor, {
+      listedExternalIds: new Set(["y"]),
+      closingExternalIds: new Set(["x"]),
+    });
+    expect([...split.keptAlive]).toEqual(["j1"]);
+  });
+
+  it("ignores a stale live mark on the row being closed", async () => {
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "j1", sourceId: "src-1", externalId: "x", lastSeenAt: ago(days(2)), lastCheckResult: "live" },
+    ]);
+    const split = await splitGoneEverywhere(["j1"], "src-1", now, cutoffFor, {
+      closingExternalIds: new Set(["x"]),
+    });
+    expect([...split.gone]).toEqual(["j1"]);
+  });
 });

@@ -343,6 +343,7 @@ export async function sourceRowsOfJobs(jobIds: string[]) {
     .select({
       jobId: jobSources.jobId,
       sourceId: jobSources.importSourceId,
+      externalId: jobSources.externalId,
       lastSeenAt: jobSources.lastSeenAt,
       lastCheckResult: jobSources.lastCheckResult,
     })
