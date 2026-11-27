@@ -1,6 +1,7 @@
 import { expireImportedJobs } from "../../../platform";
 import { hours, type LiveSource } from "../adapters/live";
 import * as repo from "../repo/import-repo";
+import { isGoneFromFullFeed } from "./outcome";
 import { LIVE_SOURCES } from "./ingest-fixtures";
 
 /** A full source is checked again when nothing touched it this long. */
@@ -60,13 +61,50 @@ export async function runFullSourceChecks(
       report.failed += 1;
       continue;
     }
-    const listedIds = new Set(listed.map((job) => job.externalId));
+    const listedIds = new Set(listed.map((job) => job.externalId.trim()));
     const published = await repo.publishedSourceRows(row.id);
     const alive = published
       .filter((job) => listedIds.has(job.externalId))
       .map((job) => job.externalId);
-    const gone = published.filter((job) => !listedIds.has(job.externalId));
+    // A non-empty list that shares nothing with our rows is a fault, not news.
+    if (published.length > 0 && alive.length === 0) {
+      report.failed += 1;
+      continue;
+    }
+    const missing = published.filter((job) => !listedIds.has(job.externalId));
+    // A merged job (D71) stays open while another source still lists it.
+    const gone: typeof missing = [];
+    const keptAlive: typeof missing = [];
+    if (missing.length) {
+      const cutoff = new Date(now.getTime() - source.staleAfterMs);
+      const rows = await repo.sourceRowsOfJobs([
+        ...new Set(missing.map((job) => job.jobId)),
+      ]);
+      const byJob = new Map<
+        string,
+        { lastSeenAt: Date; currentSource: boolean }[]
+      >();
+      for (const r of rows) {
+        byJob.set(r.jobId, [
+          ...(byJob.get(r.jobId) ?? []),
+          { lastSeenAt: r.lastSeenAt, currentSource: r.sourceId === row.id },
+        ]);
+      }
+      for (const job of missing) {
+        (isGoneFromFullFeed(byJob.get(job.jobId) ?? [], now, cutoff)
+          ? gone
+          : keptAlive
+        ).push(job);
+      }
+    }
     await repo.markChecked(row.id, alive, "live", null, now);
+    await repo.markChecked(
+      row.id,
+      keptAlive.map((job) => job.externalId),
+      "unknown",
+      "listed_elsewhere",
+      now,
+    );
     if (gone.length) {
       await repo.markChecked(
         row.id,

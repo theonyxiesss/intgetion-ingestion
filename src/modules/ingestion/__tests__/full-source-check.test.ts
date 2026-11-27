@@ -8,6 +8,7 @@ const repo = vi.hoisted(() => ({
   finishedRunsSince: vi.fn(),
   latestSourceCheck: vi.fn(),
   publishedSourceRows: vi.fn(),
+  sourceRowsOfJobs: vi.fn(),
   markChecked: vi.fn(),
   // Guards: the check must never touch these.
   ensureLiveSource: vi.fn(),
@@ -70,6 +71,13 @@ beforeEach(() => {
     { externalId: "b", jobId: "job-b" },
     { externalId: "c", jobId: "job-c" },
   ]);
+  repo.sourceRowsOfJobs.mockImplementation(async (ids: string[]) =>
+    ids.map((jobId) => ({
+      jobId,
+      sourceId: "src-1",
+      lastSeenAt: new Date(now.getTime() - days(1)),
+    })),
+  );
   jobsService.expireImportedJobs.mockImplementation(
     async (ids: string[]) => ids.length,
   );
@@ -179,5 +187,48 @@ describe("runFullSourceChecks", () => {
     const source = board("North", vi.fn(async () => [record("a")]));
     const report = await runFullSourceChecks({ now, sources: [source] });
     expect(report.checked).toBe(1);
+  });
+
+  it("keeps a job alive that another source still lists", async () => {
+    repo.sourceRowsOfJobs.mockResolvedValue([
+      { jobId: "job-c", sourceId: "src-1", lastSeenAt: new Date(now.getTime() - days(1)) },
+      { jobId: "job-c", sourceId: "src-2", lastSeenAt: new Date(now.getTime() - hours(1)) },
+    ]);
+    const source = board("North", vi.fn(async () => [record("a"), record("b")]));
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.markChecked).toHaveBeenCalledWith(
+      "src-1",
+      ["c"],
+      "unknown",
+      "listed_elsewhere",
+      now,
+    );
+    expect(report.closed).toBe(0);
+  });
+
+  it("compares trimmed external ids", async () => {
+    const source = board(
+      "North",
+      vi.fn(async () => [record(" a "), record("b"), record("c")]),
+    );
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.markChecked).toHaveBeenCalledWith(
+      "src-1",
+      ["a", "b", "c"],
+      "live",
+      null,
+      now,
+    );
+    expect(report.closed).toBe(0);
+  });
+
+  it("closes nothing when the list shares no id with published rows", async () => {
+    const source = board("North", vi.fn(async () => [record("x"), record("y")]));
+    const report = await runFullSourceChecks({ now, sources: [source] });
+    expect(jobsService.expireImportedJobs).not.toHaveBeenCalled();
+    expect(repo.markChecked).not.toHaveBeenCalled();
+    expect(report).toEqual({ checked: 0, closed: 0, skipped: 0, failed: 1 });
   });
 });
