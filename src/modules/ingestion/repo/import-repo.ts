@@ -22,6 +22,7 @@ import {
   jobs,
 } from "../../../db/owned";
 import type { ImportAdapter } from "../adapters/types";
+import type { CheckResult } from "../service/liveness-rules";
 import type { DuplicateCandidate } from "../service/dedup";
 
 /** Queries only; the rules live in service/ (3.2). */
@@ -269,7 +270,15 @@ export async function linkImportedSource(
     })
     .onConflictDoUpdate({
       target: [jobSources.importSourceId, jobSources.externalId],
-      set: { jobId, sourceUrl, lastSeenAt: seenAt },
+      // A relinked row starts a fresh liveness history.
+      set: {
+        jobId,
+        sourceUrl,
+        lastSeenAt: seenAt,
+        lastCheckedAt: null,
+        lastCheckResult: null,
+        lastCheckNote: null,
+      },
     });
 }
 
@@ -334,7 +343,9 @@ export async function sourceRowsOfJobs(jobIds: string[]) {
     .select({
       jobId: jobSources.jobId,
       sourceId: jobSources.importSourceId,
+      externalId: jobSources.externalId,
       lastSeenAt: jobSources.lastSeenAt,
+      lastCheckResult: jobSources.lastCheckResult,
     })
     .from(jobSources)
     .where(inArray(jobSources.jobId, jobIds));
@@ -351,4 +362,117 @@ export async function queueRejectedImport(jobId: string, reason: string) {
 export async function pruneImportRunHistory(now: Date) {
   const before = new Date(now.getTime() - 180 * 86400000);
   await getDb().delete(importRuns).where(lt(importRuns.startedAt, before));
+}
+
+/** A source by name, without registering it; null when it never ran. */
+export async function findSourceByName(name: string) {
+  const [row] = await getDb()
+    .select({ id: importSources.id })
+    .from(importSources)
+    .where(eq(importSources.name, name))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The freshest liveness check across the rows of one source. */
+export async function latestSourceCheck(sourceId: string): Promise<Date | null> {
+  const [row] = await getDb()
+    .select({ at: sql<Date | null>`max(${jobSources.lastCheckedAt})` })
+    .from(jobSources)
+    .where(eq(jobSources.importSourceId, sourceId));
+  return row?.at ? new Date(row.at) : null;
+}
+
+/** External id and job id of every published imported job of one source. */
+export async function publishedSourceRows(sourceId: string) {
+  return getDb()
+    .select({ externalId: jobSources.externalId, jobId: jobSources.jobId })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        eq(jobSources.importSourceId, sourceId),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    );
+}
+
+/**
+ * Published imported jobs of the given sources that are due for a link check:
+ * never checked first, then the longest unchecked, then the oldest rows.
+ */
+export async function dueWindowChecks(
+  sourceIds: readonly string[],
+  limit: number,
+) {
+  if (!sourceIds.length) return [];
+  return getDb()
+    .select({
+      jobId: jobSources.jobId,
+      sourceId: jobSources.importSourceId,
+      externalId: jobSources.externalId,
+      sourceUrl: jobSources.sourceUrl,
+    })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        inArray(jobSources.importSourceId, [...sourceIds]),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    )
+    .orderBy(sql`${jobSources.lastCheckedAt} nulls first`, jobSources.firstSeenAt)
+    .limit(limit);
+}
+
+/**
+ * Coverage of the window sweep over the same rows as `dueWindowChecks`: how
+ * many are due, and the oldest check among them. `oldestCheckedAt` is null
+ * when nothing is due or when some row was never checked at all.
+ */
+export async function dueWindowStats(
+  sourceIds: readonly string[],
+): Promise<{ count: number; oldestCheckedAt: Date | null }> {
+  if (!sourceIds.length) return { count: 0, oldestCheckedAt: null };
+  const [row] = await getDb()
+    .select({
+      count: sql<number>`count(*)::int`,
+      neverChecked: sql<boolean>`coalesce(bool_or(${jobSources.lastCheckedAt} is null), false)`,
+      oldest: sql<Date | null>`min(${jobSources.lastCheckedAt})`,
+    })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        inArray(jobSources.importSourceId, [...sourceIds]),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    );
+  const count = Number(row?.count ?? 0);
+  const oldestCheckedAt =
+    count === 0 || row?.neverChecked || !row?.oldest ? null : new Date(row.oldest);
+  return { count, oldestCheckedAt };
+}
+
+/** Stores the result of a liveness check on source rows; touches nothing else. */
+export async function markChecked(
+  sourceId: string,
+  externalIds: readonly string[],
+  result: CheckResult,
+  note: string | null,
+  at: Date,
+) {
+  if (!externalIds.length) return;
+  await getDb()
+    .update(jobSources)
+    .set({ lastCheckedAt: at, lastCheckResult: result, lastCheckNote: note })
+    .where(
+      and(
+        eq(jobSources.importSourceId, sourceId),
+        inArray(jobSources.externalId, [...externalIds]),
+      ),
+    );
 }

@@ -48,10 +48,14 @@ export const jobSources = pgTable(
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    lastCheckResult: text("last_check_result"),
+    lastCheckNote: text("last_check_note"),
   },
   (table) => [
     primaryKey({ columns: [table.importSourceId, table.externalId] }),
     index("job_sources_job_idx").on(table.jobId),
+    index("job_sources_check_due_idx").on(sql`${table.lastCheckedAt} nulls first`),
     uniqueIndex("job_sources_primary_idx")
       .on(table.jobId)
       .where(sql`${table.isPrimary}`),
