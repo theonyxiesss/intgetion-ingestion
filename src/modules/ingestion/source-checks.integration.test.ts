@@ -130,7 +130,7 @@ describe("liveness check queries", () => {
   ) {
     await getDb().execute(sql`
       insert into public.job_sources(job_id, import_source_id, external_id, source_url, is_primary, last_checked_at)
-      values (${jobId}, ${sourceId}, ${externalId}, ${`https://${dom}/${externalId}`}, false, ${lastCheckedAt})
+      values (${jobId}, ${sourceId}, ${externalId}, ${`https://${dom}/${externalId}`}, false, ${lastCheckedAt?.toISOString() ?? null}::timestamptz)
     `);
   }
 
