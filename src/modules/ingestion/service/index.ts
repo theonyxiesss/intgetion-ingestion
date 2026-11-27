@@ -10,6 +10,8 @@ export {
   runLiveImports,
 } from "./ingest-fixtures";
 export { runFullSourceChecks } from "./full-source-check";
+export { runLivenessSweep } from "./liveness-sweep";
+export type { LivenessSweepReport } from "./liveness-sweep";
 export type { FullSourceCheckReport } from "./full-source-check";
 export type { ImportReport } from "./ingest-fixtures";
 export { STALE_RUN_AFTER_MS } from "./ingest-fixtures";

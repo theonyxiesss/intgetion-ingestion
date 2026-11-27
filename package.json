@@ -1,6 +1,6 @@
 {
   "name": "@intgetion/ingestion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Job import for INTGETION JOB LIST: live and fixture sources, normalizing, scam and duplicate checks, imported jobs and their sources, the run ledger and the external apply link.",
   "license": "UNLICENSED",
   "type": "module",

@@ -22,6 +22,34 @@ branch and PR. The admin import page stays in the platform.
 - Fixture records live in `fixtures/import/`. Fixtures run only on a local
   database (`FIXTURES_NEED_LOCAL_DATABASE`).
 
+## Link liveness of imported jobs
+
+Two background processes keep published imported jobs honest. Neither saves
+or updates jobs. The result of the last check sits on `job_sources`
+(`last_checked_at`, `last_check_result`, `last_check_note`; migration
+`0002_source_checks.sql`). Closing goes through `expireImportedJobs(ids,
+"closed_at_source")` of the jobs module.
+
+- `runFullSourceChecks` for "full" sources (company boards): downloads the
+  list and closes published jobs that are missing from it. Schedule: once a
+  day.
+- `runLivenessSweep` for "window" sources (Remotive, Himalayas, Jobicy,
+  Remote OK), where absence from the feed means nothing: requests the link of
+  each published imported job (`GET`, redirects followed, body not read) and
+  closes the job only on HTTP 404 or 410. Schedule: every 15 minutes, 150 jobs
+  per run (14,400 checks a day), the longest unchecked first. A run stops
+  starting probes after 200 s; what it checked is kept and the rest go first
+  next time.
+
+Closing rules: only a 404 or 410 on the job link, or a job missing from a
+successfully downloaded, non-empty list of a "full" source. Everything else
+(403, 429, 5xx, timeout, network error, a redirect to another host, an empty
+or failed list) is `unknown` and the job stays published. Jobs closed by
+moderation are never touched (only `status = 'published'` is checked). At
+most 2 requests at once to one host, 10 s timeout, header
+`User-Agent: IntgetionLinkCheck/1.0 (+https://intgetion.com)`. The platform
+sets the schedules when the module is connected.
+
 ## Ports (`src/ports.ts`)
 
 - jobs: `saveImportedJob`, `expireImportedJobs`, `getJobForPublic`;

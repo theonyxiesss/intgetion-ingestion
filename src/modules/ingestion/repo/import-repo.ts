@@ -388,6 +388,35 @@ export async function publishedSourceRows(sourceId: string) {
     );
 }
 
+/**
+ * Published imported jobs of the given sources that are due for a link check:
+ * never checked first, then the longest unchecked, then the oldest rows.
+ */
+export async function dueWindowChecks(
+  sourceIds: readonly string[],
+  limit: number,
+) {
+  if (!sourceIds.length) return [];
+  return getDb()
+    .select({
+      jobId: jobSources.jobId,
+      sourceId: jobSources.importSourceId,
+      externalId: jobSources.externalId,
+      sourceUrl: jobSources.sourceUrl,
+    })
+    .from(jobSources)
+    .innerJoin(jobs, eq(jobs.id, jobSources.jobId))
+    .where(
+      and(
+        inArray(jobSources.importSourceId, [...sourceIds]),
+        eq(jobs.source, "imported"),
+        eq(jobs.status, "published"),
+      ),
+    )
+    .orderBy(sql`${jobSources.lastCheckedAt} nulls first`, jobSources.firstSeenAt)
+    .limit(limit);
+}
+
 /** Stores the result of a liveness check on source rows; touches nothing else. */
 export async function markChecked(
   sourceId: string,
